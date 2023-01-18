@@ -3574,6 +3574,9 @@ static void lan8841_gpio_process_cap(struct kszphy_ptp_priv *ptp_priv);
 #define LAN8841_BTRX_POWER_DOWN			70
 #define LAN8841_MMD0_REGISTER_17		17
 #define LAN8841_ADC_CHANNEL_MASK		198
+#define LAN8841_PTP_REF_CLK_CFG			258
+#define LAN8841_PTP_REF_CLK_CFG_REF_CLK_SOURCE	GENMASK(15, 13)
+#define LAN8841_PTP_REF_CLK_CFG_REF_CLK_PERIOD	GENMASK(8, 0)
 static int lan8841_config_init(struct phy_device *phydev)
 {
 	char *rx_data_skews[4] = {"rxd0-skew-psec", "rxd1-skew-psec",
@@ -3617,6 +3620,12 @@ hw_init:
 	phy_modify_mmd(phydev, 2, LAN8841_PTP_CMD_CTL,
 		       LAN8841_PTP_CMD_CTL_PTP_RESET,
 		       LAN8841_PTP_CMD_CTL_PTP_RESET);
+
+	phy_modify_mmd(phydev, 2, LAN8841_PTP_REF_CLK_CFG,
+		       LAN8841_PTP_REF_CLK_CFG_REF_CLK_SOURCE, 2);
+
+	phy_modify_mmd(phydev, 2, LAN8841_PTP_REF_CLK_CFG,
+		       LAN8841_PTP_REF_CLK_CFG_REF_CLK_PERIOD, 4);
 
 	phy_modify_mmd(phydev, 2, LAN8841_PTP_CMD_CTL,
 		       LAN8841_PTP_CMD_CTL_PTP_ENABLE,
@@ -5000,4 +5009,3 @@ static struct mdio_device_id __maybe_unused micrel_tbl[] = {
 };
 
 MODULE_DEVICE_TABLE(mdio, micrel_tbl);
-

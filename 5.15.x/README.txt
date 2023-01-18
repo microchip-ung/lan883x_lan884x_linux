@@ -1,6 +1,6 @@
 ﻿========================================================================================================== 
 Linux Device drivers for Microchip LAN7431 Ethernet Controller and LAN8841 PHY
-Version: 1.3
+Version: 1.5
 ========================================================================================================== 
  
 Contents: 
@@ -78,6 +78,10 @@ This release supports:
  
 5.  Release history 
 -------------------
+    v1.5 (public release) 1/18/2023 - internal release on 12/07/2022
+
+    v1.4 (internal release) 11/30/2022
+
     v1.3 (public release) 11/10/2022 - internal release on 10/28/2022
 
     v1.2 (internal release) 10/19/2022
