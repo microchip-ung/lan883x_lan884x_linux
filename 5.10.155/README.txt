@@ -44,12 +44,14 @@ This release supports:
         lan743x_main.c      -   lan743x hardware specific source file 
         micrel_phy.h        -   micrel phy header file including lan8841 phy. 
         micrel.c            -   micrel phy source file including lan8841 phy. 
+        patches/*           -   patches for the linux kernel
  
 4. Building and installing the drivers 
 ------------------------------------- 
     The following instructions work fine for a PC build environment, embedded 
     platforms may need slight build modifications, consult your platform documentation. 
-    a. Obtain the kernel source tree for the platform in use and build it. 
+    a. Obtain the kernel source tree for the platform in use, apply any patches
+        from patches directory, and build it. 
 	Reboot to the kernel you built.
     b. Extract the custom driver source code from the zip file.
 	Copy and overwrite linux-5.10.155/drivers/net/ethernet/microchip/lan743x_main.h

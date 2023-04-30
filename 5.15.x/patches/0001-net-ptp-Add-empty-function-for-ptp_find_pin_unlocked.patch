@@ -1,0 +1,33 @@
+From f801c396b3fbdf7f25d80d5a5c088fffd35a37e0 Mon Sep 17 00:00:00 2001
+From: Horatiu Vultur <horatiu.vultur@microchip.com>
+Date: Fri, 29 Apr 2022 09:19:53 +0200
+Subject: [PATCH] net: ptp: Add empty function for ptp_find_pin_unlocked
+
+In case the kernel is compiled without any PTP support, then the
+compilation can fail if there is any driver that is using
+ptp_find_pin_unlocked.
+Therefore add an empty function in case PTP is not compiled in.
+
+Signed-off-by: Horatiu Vultur <horatiu.vultur@microchip.com>
+---
+ include/linux/ptp_clock_kernel.h | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/include/linux/ptp_clock_kernel.h b/include/linux/ptp_clock_kernel.h
+index 874f7e73ed01b..58e561c292948 100644
+--- a/include/linux/ptp_clock_kernel.h
++++ b/include/linux/ptp_clock_kernel.h
+@@ -257,6 +257,10 @@ static inline int ptp_clock_index(struct ptp_clock *ptp)
+ static inline int ptp_find_pin(struct ptp_clock *ptp,
+ 			       enum ptp_pin_function func, unsigned int chan)
+ { return -1; }
++static inline int ptp_find_pin_unlocked(struct ptp_clock *ptp,
++					enum ptp_pin_function func,
++					unsigned int chan)
++{ return -1; }
+ static inline int ptp_schedule_worker(struct ptp_clock *ptp,
+ 				      unsigned long delay)
+ { return -EOPNOTSUPP; }
+-- 
+2.38.0
+
