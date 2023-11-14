@@ -20,7 +20,6 @@
  */
 
 #include <linux/bitfield.h>
-#include <linux/ethtool_netlink.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/phy.h>
@@ -29,6 +28,8 @@
 #include <linux/irq.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/if_vlan.h>
+#include <linux/netdevice.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/ptp_clock.h>
 #include <linux/ptp_classify.h>
@@ -54,31 +55,6 @@
 #define	KSZPHY_INTCS_LINK_UP			BIT(8)
 #define	KSZPHY_INTCS_ALL			(KSZPHY_INTCS_LINK_UP |\
 						KSZPHY_INTCS_LINK_DOWN)
-#define KSZPHY_INTCS_LINK_DOWN_STATUS		BIT(2)
-#define KSZPHY_INTCS_LINK_UP_STATUS		BIT(0)
-#define KSZPHY_INTCS_STATUS			(KSZPHY_INTCS_LINK_DOWN_STATUS |\
-						 KSZPHY_INTCS_LINK_UP_STATUS)
-
-/* LinkMD Control/Status */
-#define KSZ8081_LMD				0x1d
-#define KSZ8081_LMD_ENABLE_TEST			BIT(15)
-#define KSZ8081_LMD_STAT_NORMAL			0
-#define KSZ8081_LMD_STAT_OPEN			1
-#define KSZ8081_LMD_STAT_SHORT			2
-#define KSZ8081_LMD_STAT_FAIL			3
-#define KSZ8081_LMD_STAT_MASK			GENMASK(14, 13)
-/* Short cable (<10 meter) has been detected by LinkMD */
-#define KSZ8081_LMD_SHORT_INDICATOR		BIT(12)
-#define KSZ8081_LMD_DELTA_TIME_MASK		GENMASK(8, 0)
-
-#define KSZPHY_WIRE_PAIR_MASK			0x3
-
-#define LAN8814_CABLE_DIAG			0x12
-#define LAN8814_CABLE_DIAG_STAT_MASK		GENMASK(9, 8)
-#define LAN8814_CABLE_DIAG_VCT_DATA_MASK	GENMASK(7, 0)
-#define LAN8814_PAIR_BIT_SHIFT			12
-
-#define LAN8814_WIRE_PAIR_MASK			0xF
 
 /* Lan8814 general Interrupt control/status reg in GPHY specific block. */
 #define LAN8814_INTC				0x18
@@ -223,32 +199,26 @@
 #define LAN8814_LED_CTRL_1_KSZ9031_LED_MODE_	BIT(6)
 
 /* PHY Control 1 */
-#define MII_KSZPHY_CTRL_1			0x1e
-#define KSZ8081_CTRL1_MDIX_STAT			BIT(4)
+#define	MII_KSZPHY_CTRL_1			0x1e
 
 /* PHY Control 2 / PHY Control (if no PHY Control 1) */
-#define MII_KSZPHY_CTRL_2			0x1f
-#define MII_KSZPHY_CTRL				MII_KSZPHY_CTRL_2
+#define	MII_KSZPHY_CTRL_2			0x1f
+#define	MII_KSZPHY_CTRL				MII_KSZPHY_CTRL_2
 /* bitmap of PHY register to set interrupt mode */
-#define KSZ8081_CTRL2_HP_MDIX			BIT(15)
-#define KSZ8081_CTRL2_MDI_MDI_X_SELECT		BIT(14)
-#define KSZ8081_CTRL2_DISABLE_AUTO_MDIX		BIT(13)
-#define KSZ8081_CTRL2_FORCE_LINK		BIT(11)
-#define KSZ8081_CTRL2_POWER_SAVING		BIT(10)
 #define KSZPHY_CTRL_INT_ACTIVE_HIGH		BIT(9)
 #define KSZPHY_RMII_REF_CLK_SEL			BIT(7)
 
 /* Write/read to/from extended registers */
-#define MII_KSZPHY_EXTREG			0x0b
-#define KSZPHY_EXTREG_WRITE			0x8000
+#define MII_KSZPHY_EXTREG                       0x0b
+#define KSZPHY_EXTREG_WRITE                     0x8000
 
-#define MII_KSZPHY_EXTREG_WRITE			0x0c
-#define MII_KSZPHY_EXTREG_READ			0x0d
+#define MII_KSZPHY_EXTREG_WRITE                 0x0c
+#define MII_KSZPHY_EXTREG_READ                  0x0d
 
 /* Extended registers */
-#define MII_KSZPHY_CLK_CONTROL_PAD_SKEW		0x104
-#define MII_KSZPHY_RX_DATA_PAD_SKEW		0x105
-#define MII_KSZPHY_TX_DATA_PAD_SKEW		0x106
+#define MII_KSZPHY_CLK_CONTROL_PAD_SKEW         0x104
+#define MII_KSZPHY_RX_DATA_PAD_SKEW             0x105
+#define MII_KSZPHY_TX_DATA_PAD_SKEW             0x106
 
 #define PS_TO_REG				200
 #define FIFO_SIZE				8
@@ -299,7 +269,7 @@
 
 /* LAN7431 & LAN8841 custom drivers
  * Add macros and a function from newer kernel.h due to the back porting
- * this file from kernel 5.15 to 5.10
+ * this file from kernel 5.15 to 5.10 and 5.4
  */
 /**
  * upper_16_bits - return bits 16-31 of a number
@@ -313,14 +283,82 @@
  */
 #define lower_16_bits(n) ((u16)((n) & 0xffff))
 
-/**
- * phy_trigger_machine - Trigger the state machine to run now
- *
- * @phydev: the phy_device struct
- */
-void phy_trigger_machine(struct phy_device *phydev)
+static inline void phy_lock_mdio_bus(struct phy_device *phydev)
 {
-	phy_queue_state_machine(phydev, 0);
+	mutex_lock(&phydev->mdio.bus->mdio_lock);
+}
+
+static inline void phy_unlock_mdio_bus(struct phy_device *phydev)
+{
+	mutex_unlock(&phydev->mdio.bus->mdio_lock);
+}
+
+struct clock_identity {
+	u8 id[8];
+} __packed;
+
+struct port_identity {
+	struct clock_identity	clock_identity;
+	__be16			port_number;
+} __packed;
+
+struct ptp_header {
+	u8			tsmt;  /* transportSpecific | messageType */
+	u8			ver;   /* reserved          | versionPTP  */
+	__be16			message_length;
+	u8			domain_number;
+	u8			reserved1;
+	u8			flag_field[2];
+	__be64			correction;
+	__be32			reserved2;
+	struct port_identity	source_port_identity;
+	__be16			sequence_id;
+	u8			control;
+	u8			log_message_interval;
+} __packed;
+
+static struct ptp_header *ptp_parse_header(struct sk_buff *skb, unsigned int type)
+{
+	u8 *ptr = skb_mac_header(skb);
+
+	if (type & PTP_CLASS_VLAN)
+		ptr += VLAN_HLEN;
+
+	switch (type & PTP_CLASS_PMASK) {
+	case PTP_CLASS_IPV4:
+		ptr += IPV4_HLEN(ptr) + UDP_HLEN;
+		break;
+	case PTP_CLASS_IPV6:
+		ptr += IP6_HLEN + UDP_HLEN;
+		break;
+	case PTP_CLASS_L2:
+		break;
+	default:
+		return NULL;
+	}
+
+	ptr += ETH_HLEN;
+
+	/* Ensure that the entire header is present in this packet. */
+	if (ptr + sizeof(struct ptp_header) > skb->data + skb->len)
+		return NULL;
+
+	return (struct ptp_header *)ptr;
+}
+
+static inline u8 ptp_get_msgtype(const struct ptp_header *hdr,
+				 unsigned int type)
+{
+	u8 msgtype;
+
+	if (unlikely(type & PTP_CLASS_V1)) {
+		/* msg type is located at the control field for ptp v1 */
+		msgtype = hdr->control;
+	} else {
+		msgtype = hdr->tsmt & 0x0f;
+	}
+
+	return msgtype;
 }
 
 struct kszphy_hw_stat {
@@ -340,8 +378,6 @@ struct kszphy_type {
 	u16 disable_dll_tx_bit;
 	u16 disable_dll_mask;
 	u16 interrupt_level_mask;
-	u16 cable_diag_reg;
-	unsigned long pair_mask;
 	bool has_broadcast_disable;
 	bool has_nand_tree_disable;
 	bool has_rmii_ref_clk_sel;
@@ -376,7 +412,6 @@ struct kszphy_latencies {
 };
 
 struct kszphy_ptp_priv {
-	struct mii_timestamper mii_ts;
 	struct phy_device *phydev;
 
 	struct sk_buff_head tx_queue;
@@ -404,6 +439,7 @@ struct kszphy_ptp_priv {
 
 struct kszphy_priv {
 	struct kszphy_ptp_priv ptp_priv;
+	struct lan8814_shared_priv shared;
 	struct kszphy_latencies latencies;
 	const struct kszphy_type *type;
 	int led_mode;
@@ -416,13 +452,6 @@ struct kszphy_priv {
 
 static const struct kszphy_type lan8814_type = {
 	.led_mode_reg		= ~LAN8814_LED_CTRL_1,
-	.cable_diag_reg		= LAN8814_CABLE_DIAG,
-	.pair_mask		= LAN8814_WIRE_PAIR_MASK,
-};
-
-static const struct kszphy_type ksz886x_type = {
-	.cable_diag_reg		= KSZ8081_LMD,
-	.pair_mask		= KSZPHY_WIRE_PAIR_MASK,
 };
 
 static const struct kszphy_type ksz8021_type = {
@@ -467,8 +496,6 @@ static const struct kszphy_type lan8841_type = {
 	.disable_dll_tx_bit	= BIT(14),
 	.disable_dll_rx_bit	= BIT(14),
 	.disable_dll_mask	= BIT_MASK(14),
-	.cable_diag_reg	= LAN8814_CABLE_DIAG,
-	.pair_mask		= LAN8814_WIRE_PAIR_MASK,
 };
 
 static int kszphy_extended_write(struct phy_device *phydev,
@@ -498,7 +525,7 @@ static int kszphy_ack_interrupt(struct phy_device *phydev)
 static int kszphy_config_intr(struct phy_device *phydev)
 {
 	const struct kszphy_type *type = phydev->drv->driver_data;
-	int temp, err;
+	int temp;
 	u16 mask;
 
 	if (type && type->interrupt_level_mask)
@@ -514,40 +541,12 @@ static int kszphy_config_intr(struct phy_device *phydev)
 	phy_write(phydev, MII_KSZPHY_CTRL, temp);
 
 	/* enable / disable interrupts */
-	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
-		err = kszphy_ack_interrupt(phydev);
-		if (err)
-			return err;
-
+	if (phydev->interrupts == PHY_INTERRUPT_ENABLED)
 		temp = KSZPHY_INTCS_ALL;
-		err = phy_write(phydev, MII_KSZPHY_INTCS, temp);
-	} else {
+	else
 		temp = 0;
-		err = phy_write(phydev, MII_KSZPHY_INTCS, temp);
-		if (err)
-			return err;
 
-		err = kszphy_ack_interrupt(phydev);
-	}
-
-	return err;
-}
-
-static irqreturn_t kszphy_handle_interrupt(struct phy_device *phydev)
-{
-	int irq_status;
-
-	irq_status = phy_read(phydev, MII_KSZPHY_INTCS);
-	if (irq_status < 0) {
-		return IRQ_NONE;
-	}
-
-	if (!(irq_status & KSZPHY_INTCS_STATUS))
-		return IRQ_NONE;
-
-	phy_trigger_machine(phydev);
-
-	return IRQ_HANDLED;
+	return phy_write(phydev, MII_KSZPHY_INTCS, temp);
 }
 
 static int kszphy_rmii_clk_sel(struct phy_device *phydev, bool val)
@@ -676,19 +675,14 @@ static int kszphy_config_init(struct phy_device *phydev)
 	return kszphy_config_reset(phydev);
 }
 
-static int ksz8041_fiber_mode(struct phy_device *phydev)
-{
-	struct device_node *of_node = phydev->mdio.dev.of_node;
-
-	return of_property_read_bool(of_node, "micrel,fiber-mode");
-}
-
 static int ksz8041_config_init(struct phy_device *phydev)
 {
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
 
+	struct device_node *of_node = phydev->mdio.dev.of_node;
+
 	/* Limit supported and advertised modes in fiber mode */
-	if (ksz8041_fiber_mode(phydev)) {
+	if (of_property_read_bool(of_node, "micrel,fiber-mode")) {
 		phydev->dev_flags |= MICREL_PHY_FXEN;
 		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, mask);
 		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT, mask);
@@ -755,87 +749,6 @@ static int ksz8081_config_init(struct phy_device *phydev)
 	phy_clear_bits(phydev, MII_KSZPHY_OMSO, KSZPHY_OMSO_FACTORY_TEST);
 
 	return kszphy_config_init(phydev);
-}
-
-static int ksz8081_config_mdix(struct phy_device *phydev, u8 ctrl)
-{
-	u16 val;
-
-	switch (ctrl) {
-	case ETH_TP_MDI:
-		val = KSZ8081_CTRL2_DISABLE_AUTO_MDIX;
-		break;
-	case ETH_TP_MDI_X:
-		val = KSZ8081_CTRL2_DISABLE_AUTO_MDIX |
-			KSZ8081_CTRL2_MDI_MDI_X_SELECT;
-		break;
-	case ETH_TP_MDI_AUTO:
-		val = 0;
-		break;
-	default:
-		return 0;
-	}
-
-	return phy_modify(phydev, MII_KSZPHY_CTRL_2,
-			  KSZ8081_CTRL2_HP_MDIX |
-			  KSZ8081_CTRL2_MDI_MDI_X_SELECT |
-			  KSZ8081_CTRL2_DISABLE_AUTO_MDIX,
-			  KSZ8081_CTRL2_HP_MDIX | val);
-}
-
-static int ksz8081_config_aneg(struct phy_device *phydev)
-{
-	int ret;
-
-	ret = genphy_config_aneg(phydev);
-	if (ret)
-		return ret;
-
-	/* The MDI-X configuration is automatically changed by the PHY after
-	 * switching from autoneg off to on. So, take MDI-X configuration under
-	 * own control and set it after autoneg configuration was done.
-	 */
-	return ksz8081_config_mdix(phydev, phydev->mdix_ctrl);
-}
-
-static int ksz8081_mdix_update(struct phy_device *phydev)
-{
-	int ret;
-
-	ret = phy_read(phydev, MII_KSZPHY_CTRL_2);
-	if (ret < 0)
-		return ret;
-
-	if (ret & KSZ8081_CTRL2_DISABLE_AUTO_MDIX) {
-		if (ret & KSZ8081_CTRL2_MDI_MDI_X_SELECT)
-			phydev->mdix_ctrl = ETH_TP_MDI_X;
-		else
-			phydev->mdix_ctrl = ETH_TP_MDI;
-	} else {
-		phydev->mdix_ctrl = ETH_TP_MDI_AUTO;
-	}
-
-	ret = phy_read(phydev, MII_KSZPHY_CTRL_1);
-	if (ret < 0)
-		return ret;
-
-	if (ret & KSZ8081_CTRL1_MDIX_STAT)
-		phydev->mdix = ETH_TP_MDI;
-	else
-		phydev->mdix = ETH_TP_MDI_X;
-
-	return 0;
-}
-
-static int ksz8081_read_status(struct phy_device *phydev)
-{
-	int ret;
-
-	ret = ksz8081_mdix_update(phydev);
-	if (ret < 0)
-		return ret;
-
-	return genphy_read_status(phydev);
 }
 
 static int ksz8061_config_init(struct phy_device *phydev)
@@ -1481,92 +1394,6 @@ static int ksz8873mll_config_aneg(struct phy_device *phydev)
 	return 0;
 }
 
-static int ksz886x_config_mdix(struct phy_device *phydev, u8 ctrl)
-{
-	u16 val;
-
-	switch (ctrl) {
-	case ETH_TP_MDI:
-		val = KSZ886X_BMCR_DISABLE_AUTO_MDIX;
-		break;
-	case ETH_TP_MDI_X:
-		/* Note: The naming of the bit KSZ886X_BMCR_FORCE_MDI is bit
-		 * counter intuitive, the "-X" in "1 = Force MDI" in the data
-		 * sheet seems to be missing:
-		 * 1 = Force MDI (sic!) (transmit on RX+/RX- pins)
-		 * 0 = Normal operation (transmit on TX+/TX- pins)
-		 */
-		val = KSZ886X_BMCR_DISABLE_AUTO_MDIX | KSZ886X_BMCR_FORCE_MDI;
-		break;
-	case ETH_TP_MDI_AUTO:
-		val = 0;
-		break;
-	default:
-		return 0;
-	}
-
-	return phy_modify(phydev, MII_BMCR,
-			  KSZ886X_BMCR_HP_MDIX | KSZ886X_BMCR_FORCE_MDI |
-			  KSZ886X_BMCR_DISABLE_AUTO_MDIX,
-			  KSZ886X_BMCR_HP_MDIX | val);
-}
-
-static int ksz886x_config_aneg(struct phy_device *phydev)
-{
-	int ret;
-
-	ret = genphy_config_aneg(phydev);
-	if (ret)
-		return ret;
-
-	/* The MDI-X configuration is automatically changed by the PHY after
-	 * switching from autoneg off to on. So, take MDI-X configuration under
-	 * own control and set it after autoneg configuration was done.
-	 */
-	return ksz886x_config_mdix(phydev, phydev->mdix_ctrl);
-}
-
-static int ksz886x_mdix_update(struct phy_device *phydev)
-{
-	int ret;
-
-	ret = phy_read(phydev, MII_BMCR);
-	if (ret < 0)
-		return ret;
-
-	if (ret & KSZ886X_BMCR_DISABLE_AUTO_MDIX) {
-		if (ret & KSZ886X_BMCR_FORCE_MDI)
-			phydev->mdix_ctrl = ETH_TP_MDI_X;
-		else
-			phydev->mdix_ctrl = ETH_TP_MDI;
-	} else {
-		phydev->mdix_ctrl = ETH_TP_MDI_AUTO;
-	}
-
-	ret = phy_read(phydev, MII_KSZPHY_CTRL);
-	if (ret < 0)
-		return ret;
-
-	/* Same reverse logic as KSZ886X_BMCR_FORCE_MDI */
-	if (ret & KSZ886X_CTRL_MDIX_STAT)
-		phydev->mdix = ETH_TP_MDI_X;
-	else
-		phydev->mdix = ETH_TP_MDI;
-
-	return 0;
-}
-
-static int ksz886x_read_status(struct phy_device *phydev)
-{
-	int ret;
-
-	ret = ksz886x_mdix_update(phydev);
-	if (ret < 0)
-		return ret;
-
-	return genphy_read_status(phydev);
-}
-
 static int kszphy_get_sset_count(struct phy_device *phydev)
 {
 	return ARRAY_SIZE(kszphy_hw_stats);
@@ -1711,9 +1538,6 @@ static int kszphy_probe(struct phy_device *phydev)
 		}
 	}
 
-	if (ksz8041_fiber_mode(phydev))
-		phydev->port = PORT_FIBRE;
-
 	/* Support legacy board-file configuration */
 	if (phydev->dev_flags & MICREL_PHY_50MHZ_CLK) {
 		priv->rmii_ref_clk_sel = true;
@@ -1721,234 +1545,6 @@ static int kszphy_probe(struct phy_device *phydev)
 	}
 
 	return 0;
-}
-
-static int lan8814_cable_test_start(struct phy_device *phydev)
-{
-	/* If autoneg is enabled, we won't be able to test cross pair
-	 * short. In this case, the PHY will "detect" a link and
-	 * confuse the internal state machine - disable auto neg here.
-	 * Set the speed to 1000mbit and full duplex.
-	 */
-	return phy_modify(phydev, MII_BMCR, BMCR_ANENABLE | BMCR_SPEED100,
-			  BMCR_SPEED1000 | BMCR_FULLDPLX);
-}
-
-static int ksz886x_cable_test_start(struct phy_device *phydev)
-{
-	if (phydev->dev_flags & MICREL_KSZ8_P1_ERRATA)
-		return -EOPNOTSUPP;
-
-	/* If autoneg is enabled, we won't be able to test cross pair
-	 * short. In this case, the PHY will "detect" a link and
-	 * confuse the internal state machine - disable auto neg here.
-	 * If autoneg is disabled, we should set the speed to 10mbit.
-	 */
-	return phy_clear_bits(phydev, MII_BMCR, BMCR_ANENABLE | BMCR_SPEED100);
-}
-
-static int ksz886x_cable_test_result_trans(u16 status, u16 mask)
-{
-	switch (FIELD_GET(mask, status)) {
-	case KSZ8081_LMD_STAT_NORMAL:
-		return ETHTOOL_A_CABLE_RESULT_CODE_OK;
-	case KSZ8081_LMD_STAT_SHORT:
-		return ETHTOOL_A_CABLE_RESULT_CODE_SAME_SHORT;
-	case KSZ8081_LMD_STAT_OPEN:
-		return ETHTOOL_A_CABLE_RESULT_CODE_OPEN;
-	case KSZ8081_LMD_STAT_FAIL:
-		fallthrough;
-	default:
-		return ETHTOOL_A_CABLE_RESULT_CODE_UNSPEC;
-	}
-}
-
-static bool ksz886x_cable_test_failed(u16 status, u16 mask)
-{
-	return FIELD_GET(mask, status) ==
-		KSZ8081_LMD_STAT_FAIL;
-}
-
-static bool ksz886x_cable_test_fault_length_valid(u16 status, u16 mask)
-{
-	switch (FIELD_GET(mask, status)) {
-	case KSZ8081_LMD_STAT_OPEN:
-		fallthrough;
-	case KSZ8081_LMD_STAT_SHORT:
-		return true;
-	}
-	return false;
-}
-
-static int ksz886x_cable_test_fault_length(struct phy_device *phydev, u16 status, u16 data_mask)
-{
-	int dt;
-
-	/* According to the data sheet the distance to the fault is
-	 * DELTA_TIME * 0.4 meters for ksz phys.
-	 * (DELTA_TIME - 22) * 0.8 for lan8814 phy.
-	 */
-	dt = FIELD_GET(data_mask, status);
-
-	if ((phydev->phy_id & MICREL_PHY_ID_MASK) == PHY_ID_LAN8814)
-		return ((dt - 22) * 800) / 10;
-	else
-		return (dt * 400) / 10;
-}
-
-static int ksz886x_cable_test_wait_for_completion(struct phy_device *phydev)
-{
-	const struct kszphy_type *type = phydev->drv->driver_data;
-	int val, ret;
-
-	ret = phy_read_poll_timeout(phydev, type->cable_diag_reg, val,
-				    !(val & KSZ8081_LMD_ENABLE_TEST),
-				    30000, 100000, true);
-
-	return ret < 0 ? ret : 0;
-}
-
-static int lan8814_cable_test_one_pair(struct phy_device *phydev, int pair)
-{
-	static const int ethtool_pair[] = { ETHTOOL_A_CABLE_PAIR_A,
-					    ETHTOOL_A_CABLE_PAIR_B,
-					    ETHTOOL_A_CABLE_PAIR_C,
-					    ETHTOOL_A_CABLE_PAIR_D,
-					  };
-	u32 fault_length;
-	int ret;
-	int val;
-
-	val = KSZ8081_LMD_ENABLE_TEST;
-	val = val | (pair << LAN8814_PAIR_BIT_SHIFT);
-
-	ret = phy_write(phydev, LAN8814_CABLE_DIAG, val);
-	if (ret < 0)
-		return ret;
-
-	ret = ksz886x_cable_test_wait_for_completion(phydev);
-	if (ret)
-		return ret;
-
-	val = phy_read(phydev, LAN8814_CABLE_DIAG);
-	if (val < 0)
-		return val;
-
-	if (ksz886x_cable_test_failed(val, LAN8814_CABLE_DIAG_STAT_MASK))
-		return -EAGAIN;
-
-	ret = ethnl_cable_test_result(phydev, ethtool_pair[pair],
-				      ksz886x_cable_test_result_trans(val,
-								      LAN8814_CABLE_DIAG_STAT_MASK
-								      ));
-	if (ret)
-		return ret;
-
-	if (!ksz886x_cable_test_fault_length_valid(val, LAN8814_CABLE_DIAG_STAT_MASK))
-		return 0;
-
-	fault_length = ksz886x_cable_test_fault_length(phydev, val,
-						       LAN8814_CABLE_DIAG_VCT_DATA_MASK);
-
-	return ethnl_cable_test_fault_length(phydev, ethtool_pair[pair], fault_length);
-}
-
-static int ksz886x_cable_test_one_pair(struct phy_device *phydev, int pair)
-{
-	static const int ethtool_pair[] = {
-		ETHTOOL_A_CABLE_PAIR_A,
-		ETHTOOL_A_CABLE_PAIR_B,
-	};
-	int ret, val, mdix;
-	u32 fault_length;
-
-	/* There is no way to choice the pair, like we do one ksz9031.
-	 * We can workaround this limitation by using the MDI-X functionality.
-	 */
-	if (pair == 0)
-		mdix = ETH_TP_MDI;
-	else
-		mdix = ETH_TP_MDI_X;
-
-	switch (phydev->phy_id & MICREL_PHY_ID_MASK) {
-	case PHY_ID_KSZ8081:
-		ret = ksz8081_config_mdix(phydev, mdix);
-		break;
-	case PHY_ID_KSZ886X:
-		ret = ksz886x_config_mdix(phydev, mdix);
-		break;
-	default:
-		ret = -ENODEV;
-	}
-
-	if (ret)
-		return ret;
-
-	/* Now we are ready to fire. This command will send a 100ns pulse
-	 * to the pair.
-	 */
-	ret = phy_write(phydev, KSZ8081_LMD, KSZ8081_LMD_ENABLE_TEST);
-	if (ret)
-		return ret;
-
-	ret = ksz886x_cable_test_wait_for_completion(phydev);
-	if (ret)
-		return ret;
-
-	val = phy_read(phydev, KSZ8081_LMD);
-	if (val < 0)
-		return val;
-
-	if (ksz886x_cable_test_failed(val, KSZ8081_LMD_STAT_MASK))
-		return -EAGAIN;
-
-	ret = ethnl_cable_test_result(phydev, ethtool_pair[pair],
-				      ksz886x_cable_test_result_trans(val, KSZ8081_LMD_STAT_MASK));
-	if (ret)
-		return ret;
-
-	if (!ksz886x_cable_test_fault_length_valid(val, KSZ8081_LMD_STAT_MASK))
-		return 0;
-
-	fault_length = ksz886x_cable_test_fault_length(phydev, val, KSZ8081_LMD_DELTA_TIME_MASK);
-
-	return ethnl_cable_test_fault_length(phydev, ethtool_pair[pair], fault_length);
-}
-
-static int ksz886x_cable_test_get_status(struct phy_device *phydev,
-					 bool *finished)
-{
-	const struct kszphy_type *type = phydev->drv->driver_data;
-	unsigned long pair_mask = type->pair_mask;
-	int retries = 20;
-	int pair, ret;
-
-	*finished = false;
-
-	/* Try harder if link partner is active */
-	while (pair_mask && retries--) {
-		for_each_set_bit(pair, &pair_mask, 4) {
-			if (type->cable_diag_reg == LAN8814_CABLE_DIAG)
-				ret = lan8814_cable_test_one_pair(phydev, pair);
-			else
-				ret = ksz886x_cable_test_one_pair(phydev, pair);
-			if (ret == -EAGAIN)
-				continue;
-			if (ret < 0)
-				return ret;
-			clear_bit(pair, &pair_mask);
-		}
-		/* If link partner is in autonegotiation mode it will send 2ms
-		 * of FLPs with at least 6ms of silence.
-		 * Add 2ms sleep to have better chances to hit this silence.
-		 */
-		if (pair_mask)
-			msleep(2);
-	}
-
-	*finished = true;
-
-	return ret;
 }
 
 #define LAN8814_EXT_PAGE_ACCESS_CONTROL			0x16
@@ -2240,11 +1836,10 @@ static void lan88xx_ts_info(struct ethtool_ts_info *info)
 		(1 << HWTSTAMP_FILTER_PTP_V2_EVENT);
 }
 
-static int lan8814_ts_info(struct mii_timestamper *mii_ts, struct ethtool_ts_info *info)
+static int lan8814_ts_info(struct phy_device *phydev, struct ethtool_ts_info *info)
 {
-	struct kszphy_ptp_priv *ptp_priv = container_of(mii_ts, struct kszphy_ptp_priv, mii_ts);
-	struct phy_device *phydev = ptp_priv->phydev;
-	struct lan8814_shared_priv *shared = phydev->shared->priv;
+	struct kszphy_priv *priv = phydev->priv;
+	struct lan8814_shared_priv *shared = &priv->shared;
 
 	lan88xx_ts_info(info);
 	info->phc_index = ptp_clock_index(shared->ptp_clock);
@@ -2327,11 +1922,10 @@ static void lan8814_latency_workaround(struct phy_device *phydev,
 	}
 }
 
-static int lan8814_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
+static int lan8814_hwtstamp(struct phy_device *phydev, struct ifreq *ifr)
 {
-	struct kszphy_ptp_priv *ptp_priv = container_of(mii_ts, struct kszphy_ptp_priv, mii_ts);
-	struct phy_device *phydev = ptp_priv->phydev;
 	struct kszphy_priv *priv = phydev->priv;
+	struct kszphy_ptp_priv *ptp_priv = &priv->ptp_priv;
 	struct lan8814_ptp_rx_ts *rx_ts, *tmp;
 	struct kszphy_latencies latencies;
 	struct hwtstamp_config config;
@@ -2434,10 +2028,11 @@ static bool is_sync(struct sk_buff *skb, int type)
 	return ((ptp_get_msgtype(hdr, type) & 0xf) == 0);
 }
 
-static void lan8814_txtstamp(struct mii_timestamper *mii_ts,
+static void lan8814_txtstamp(struct phy_device *phydev,
 			     struct sk_buff *skb, int type)
 {
-	struct kszphy_ptp_priv *ptp_priv = container_of(mii_ts, struct kszphy_ptp_priv, mii_ts);
+	struct kszphy_priv *priv = phydev->priv;
+	struct kszphy_ptp_priv *ptp_priv = &priv->ptp_priv;
 
 	switch (ptp_priv->hwts_tx_type) {
 	case HWTSTAMP_TX_ONESTEP_SYNC:
@@ -2505,9 +2100,10 @@ static bool lan8814_match_rx_skb(struct kszphy_ptp_priv *ptp_priv,
 	return ret;
 }
 
-static bool lan8814_rxtstamp(struct mii_timestamper *mii_ts, struct sk_buff *skb, int type)
+static bool lan8814_rxtstamp(struct phy_device *phydev, struct sk_buff *skb, int type)
 {
-	struct kszphy_ptp_priv *ptp_priv = container_of(mii_ts, struct kszphy_ptp_priv, mii_ts);
+	struct kszphy_priv *priv = phydev->priv;
+	struct kszphy_ptp_priv *ptp_priv = &priv->ptp_priv;
 
 	if (ptp_priv->rx_filter == HWTSTAMP_FILTER_NONE ||
 	    type == PTP_CLASS_NONE)
@@ -2713,14 +2309,11 @@ static int lan88xx_get_pulsewidth(struct phy_device *phydev,
 {
 	struct timespec64 ts_period;
 	s64 ts_on_nsec, period_nsec;
-	struct timespec64 ts_on;
 
 	ts_period.tv_sec = perout_request->period.sec;
 	ts_period.tv_nsec = perout_request->period.nsec;
 
-	ts_on.tv_sec = perout_request->on.sec;
-	ts_on.tv_nsec = perout_request->on.nsec;
-	ts_on_nsec = timespec64_to_ns(&ts_on);
+	ts_on_nsec = 100000;
 	period_nsec = timespec64_to_ns(&ts_period);
 
 	if (period_nsec < 200) {
@@ -2791,10 +2384,6 @@ static int lan8814_ptp_perout(struct lan8814_shared_priv *shared, int on,
 	struct phy_device *phydev = shared->phydev;
 	int pulse_width;
 	int ret;
-
-	/* Reject requests with unsupported flags */
-	if (perout_request->flags & ~PTP_PEROUT_DUTY_CYCLE)
-		return -EOPNOTSUPP;
 
 	mutex_lock(&shared->shared_lock);
 	shared->gpio_pin = ptp_find_pin(shared->ptp_clock, PTP_PF_PEROUT,
@@ -2880,7 +2469,8 @@ static int lan8814_ptpci_settime64(struct ptp_clock_info *ptpci,
 static void lan8814_ptp_clock_step(struct phy_device *phydev,
 				   s64 time_step_ns)
 {
-	struct lan8814_shared_priv *shared = phydev->shared->priv;
+	struct kszphy_priv *priv = phydev->priv;
+	struct lan8814_shared_priv *shared = &priv->shared;
 	int gpio_pin = shared->gpio_pin;
 	u32 nano_seconds_step;
 	u64 abs_time_step_ns;
@@ -3232,14 +2822,14 @@ void lan8814_link_change_notify(struct phy_device *phydev)
 	lan8814_latency_config(phydev, &priv->latencies);
 }
 
-static irqreturn_t lan8814_handle_interrupt(struct phy_device *phydev)
+static int lan8814_handle_interrupt(struct phy_device *phydev)
 {
 	u16 tsu_irq_status;
 	int irq_status;
 
 	irq_status = phy_read(phydev, LAN8814_INTS);
 	if (irq_status > 0 && (irq_status & LAN8814_INTS_LINK))
-		phy_trigger_machine(phydev);
+		phy_mac_interrupt(phydev);
 
 	if (irq_status < 0) {
 		return IRQ_NONE;
@@ -3378,13 +2968,6 @@ static void lan8814_ptp_init(struct phy_device *phydev)
 
 	ptp_priv->phydev = phydev;
 
-	ptp_priv->mii_ts.rxtstamp = lan8814_rxtstamp;
-	ptp_priv->mii_ts.txtstamp = lan8814_txtstamp;
-	ptp_priv->mii_ts.hwtstamp = lan8814_hwtstamp;
-	ptp_priv->mii_ts.ts_info  = lan8814_ts_info;
-
-	phydev->mii_ts = &ptp_priv->mii_ts;
-
 	/* Enable ptp to run LTC clock for ptp and gpio 1PPS operation */
 	lan8814_write_page_reg(ptp_priv->phydev, 4, PTP_CMD_CTL,
 			       PTP_CMD_CTL_PTP_ENABLE_);
@@ -3392,7 +2975,8 @@ static void lan8814_ptp_init(struct phy_device *phydev)
 
 static int lan8814_ptp_probe_once(struct phy_device *phydev)
 {
-	struct lan8814_shared_priv *shared = phydev->shared->priv;
+	struct kszphy_priv *priv = phydev->priv;
+	struct lan8814_shared_priv *shared = &priv->shared;
 	int i;
 
 	/* Initialise shared lock for clock*/
@@ -3538,10 +3122,7 @@ static int lan8814_probe(struct phy_device *phydev)
 	 * phy address value
 	 */
 	addr = lan8814_read_page_reg(phydev, 4, 0) & 0x1F;
-	devm_phy_package_join(&phydev->mdio.dev, phydev,
-			      addr, sizeof(struct lan8814_shared_priv));
-
-	if (phy_package_init_once(phydev)) {
+	if (!(addr % 4)) {
 		err = lan8814_ptp_probe_once(phydev);
 		if (err)
 			return err;
@@ -3555,65 +3136,16 @@ static int lan8814_probe(struct phy_device *phydev)
 	return 0;
 }
 
-static int lan8814_get_sqi(struct phy_device *phydev)
-{
-	int rc, val;
-
-	val = lan8814_read_page_reg(phydev, 1, LAN8814_DCQ_CTRL);
-	if (val < 0)
-		return val;
-
-	val &= ~LAN8814_DCQ_CTRL_CHANNEL_MASK;
-	val |= LAN8814_DCQ_CTRL_READ_CAPTURE_;
-	rc = lan8814_write_page_reg(phydev, 1, LAN8814_DCQ_CTRL, val);
-	if (rc < 0)
-		return rc;
-
-	rc = lan8814_read_page_reg(phydev, 1, LAN8814_DCQ_SQI);
-	if (rc < 0)
-		return rc;
-
-	return FIELD_GET(LAN8814_DCQ_SQI_VAL_MASK, rc);
-}
-
-static int lan8814_get_sqi_max(struct phy_device *phydev)
-{
-	return LAN8814_DCQ_SQI_MAX;
-}
-
-static int lan8841_get_sqi(struct phy_device *phydev)
-{
-	int rc, val;
-
-	val = phy_read_mmd(phydev, 1, LAN8814_DCQ_CTRL);
-	if (val < 0)
-		return val;
-
-	/* TODO 
-	 * so far, only report the first pair as the uAPI takes one pair only.
-	 */
-//	val &= ~LAN8814_DCQ_CTRL_CHANNEL_MASK;
-//	val |= LAN8814_DCQ_CTRL_READ_CAPTURE_;
-	val = LAN8814_DCQ_CTRL_READ_CAPTURE_;
-	rc = phy_write_mmd(phydev, 1, LAN8814_DCQ_CTRL, val);
-	if (rc < 0)
-		return rc;
-
-	rc = phy_read_mmd(phydev, 1, LAN8814_DCQ_SQI);
-	if (rc < 0)
-		return rc;
-
-	return FIELD_GET(LAN8814_DCQ_SQI_VAL_MASK, rc);
-}
-
 static void lan8841_ptp_update_target(struct kszphy_ptp_priv *ptp_priv,
 				      const struct timespec64 *ts);
 static void lan8841_gpio_process_cap(struct kszphy_ptp_priv *ptp_priv);
 
 #define LAN8841_PTP_RX_PARSE_L2_ADDR_EN		370
 #define LAN8841_PTP_RX_PARSE_IP_ADDR_EN		371
+#define LAN8841_PTP_RX_VERSION			374
 #define LAN8841_PTP_TX_PARSE_L2_ADDR_EN		434
 #define LAN8841_PTP_TX_PARSE_IP_ADDR_EN		435
+#define LAN8841_PTP_TX_VERSION			438
 #define LAN8841_PTP_CMD_CTL			256
 #define LAN8841_PTP_CMD_CTL_PTP_ENABLE		BIT(2)
 #define LAN8841_PTP_CMD_CTL_PTP_DISABLE		BIT(1)
@@ -3682,6 +3214,10 @@ hw_init:
 	phy_write_mmd(phydev, 2, LAN8841_PTP_RX_PARSE_L2_ADDR_EN, 0);
 	phy_write_mmd(phydev, 2, LAN8841_PTP_TX_PARSE_IP_ADDR_EN, 0);
 	phy_write_mmd(phydev, 2, LAN8841_PTP_RX_PARSE_IP_ADDR_EN, 0);
+
+	/* Disable checking for minorVersionPTP field */
+	phy_write_mmd(phydev, 2, LAN8841_PTP_RX_VERSION, 0xff00);
+	phy_write_mmd(phydev, 2, LAN8841_PTP_TX_VERSION, 0xff00);
 
 	/* 100BT Clause 40 improvenent errata */
 	phy_write_mmd(phydev, 28, LAN8841_ANALOG_CONTROL_1, 0x40);
@@ -3880,28 +3416,29 @@ static void lan8841_handle_ptp_interrupt(struct phy_device *phydev)
 
 #define LAN8841_INTS_PTP		BIT(9)
 #define LAN8841_INTS_GPIO		BIT(8)
-static irqreturn_t lan8841_handle_interrupt(struct phy_device *phydev)
+static int lan8841_handle_interrupt(struct phy_device *phydev)
 {
 	int irq_status;
 
 	irq_status = phy_read(phydev, LAN8814_INTS);
 	if (irq_status < 0) {
-		return IRQ_NONE;
+		return -1;
 	}
 
 	if (irq_status & LAN8814_INTS_LINK)
-		phy_trigger_machine(phydev);
+		phy_mac_interrupt(phydev);
 
 	if (irq_status & LAN8841_INTS_PTP ||
 	    irq_status & LAN8841_INTS_GPIO)
 		lan8841_handle_ptp_interrupt(phydev);
 
-	return IRQ_HANDLED;
+	return 0;
 }
 
-static int lan8841_ts_info(struct mii_timestamper *mii_ts, struct ethtool_ts_info *info)
+static int lan8841_ts_info(struct phy_device *phydev, struct ethtool_ts_info *info)
 {
-	struct kszphy_ptp_priv *ptp_priv = container_of(mii_ts, struct kszphy_ptp_priv, mii_ts);
+	struct kszphy_priv *priv = phydev->priv;
+	struct kszphy_ptp_priv *ptp_priv = &priv->ptp_priv;
 
 	info->phc_index = ptp_priv->ptp_clock ? ptp_clock_index(ptp_priv->ptp_clock) : -1;
 	if (info->phc_index == -1) {
@@ -3948,10 +3485,10 @@ static void lan8841_ptp_enable_int(struct kszphy_ptp_priv *ptp_priv,
 #define LAN8841_PTP_RX_TIMESTAMP_EN		379
 #define LAN8841_PTP_TX_TIMESTAMP_EN		443
 #define LAN8841_PTP_TX_MOD 			445
-static int lan8841_hwtstamp(struct mii_timestamper *mii_ts, struct ifreq *ifr)
+static int lan8841_hwtstamp(struct phy_device *phydev, struct ifreq *ifr)
 {
-	struct kszphy_ptp_priv *ptp_priv = container_of(mii_ts, struct kszphy_ptp_priv, mii_ts);
-	struct phy_device *phydev = ptp_priv->phydev;
+	struct kszphy_priv *priv = phydev->priv;
+	struct kszphy_ptp_priv *ptp_priv = &priv->ptp_priv;
 	struct lan8814_ptp_rx_ts *rx_ts, *tmp;
 	struct hwtstamp_config config;
 	int txcfg = 0, rxcfg = 0;
@@ -4455,9 +3992,6 @@ static int lan8841_ptp_perout(struct ptp_clock_info *ptp,
 	int pin;
 	int ret;
 
-	if (rq->perout.flags & ~PTP_PEROUT_DUTY_CYCLE)
-		return -EOPNOTSUPP;
-
 	pin = ptp_find_pin(ptp_priv->ptp_clock, PTP_PF_PEROUT, rq->perout.index);
 	if (pin == -1 || pin >= LAN8841_PTP_GPIO_NUM)
 		return -EINVAL;
@@ -4508,7 +4042,7 @@ static void lan8841_gpio_process_cap(struct kszphy_ptp_priv *ptp_priv)
 	int pin;
 	u16 tmp;
 
-	pin = ptp_find_pin_unlocked(ptp_priv->ptp_clock, PTP_PF_EXTTS, 0);
+	pin = ptp_find_pin(ptp_priv->ptp_clock, PTP_PF_EXTTS, 0);
 	if (pin == -1)
 		return;
 
@@ -4738,13 +4272,6 @@ static int lan8841_probe(struct phy_device *phydev)
 	ptp_priv->phydev = phydev;
 	mutex_init(&ptp_priv->ptp_lock);
 
-	ptp_priv->mii_ts.rxtstamp = lan8814_rxtstamp;
-	ptp_priv->mii_ts.txtstamp = lan8814_txtstamp;
-	ptp_priv->mii_ts.hwtstamp = lan8841_hwtstamp;
-	ptp_priv->mii_ts.ts_info = lan8841_ts_info;
-
-	phydev->mii_ts = &ptp_priv->mii_ts;
-
 	return 0;
 }
 
@@ -4757,8 +4284,8 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ks8737_type,
 	.probe		= kszphy_probe,
 	.config_init	= kszphy_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.suspend	= kszphy_suspend,
 	.resume		= kszphy_resume,
 }, {
@@ -4769,8 +4296,8 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ksz8021_type,
 	.probe		= kszphy_probe,
 	.config_init	= kszphy_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
@@ -4784,8 +4311,8 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ksz8021_type,
 	.probe		= kszphy_probe,
 	.config_init	= kszphy_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
@@ -4799,9 +4326,9 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ksz8041_type,
 	.probe		= kszphy_probe,
 	.config_init	= ksz8041_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_aneg	= ksz8041_config_aneg,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
@@ -4816,8 +4343,8 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ksz8041_type,
 	.probe		= kszphy_probe,
 	.config_init	= kszphy_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
@@ -4829,8 +4356,8 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ksz8051_type,
 	.probe		= kszphy_probe,
 	.config_init	= kszphy_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
@@ -4845,8 +4372,8 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ksz8041_type,
 	.probe		= kszphy_probe,
 	.config_init	= kszphy_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
@@ -4856,31 +4383,26 @@ static struct phy_driver ksphy_driver[] = {
 	.phy_id		= PHY_ID_KSZ8081,
 	.name		= "Micrel KSZ8081 or KSZ8091",
 	.phy_id_mask	= MICREL_PHY_ID_MASK,
-	.flags		= PHY_POLL_CABLE_TEST,
 	/* PHY_BASIC_FEATURES */
 	.driver_data	= &ksz8081_type,
 	.probe		= kszphy_probe,
 	.config_init	= ksz8081_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.soft_reset	= genphy_soft_reset,
-	.config_aneg	= ksz8081_config_aneg,
-	.read_status	= ksz8081_read_status,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
 	.suspend	= kszphy_suspend,
 	.resume		= kszphy_resume,
-	.cable_test_start	= ksz886x_cable_test_start,
-	.cable_test_get_status	= ksz886x_cable_test_get_status,
 }, {
 	.phy_id		= PHY_ID_KSZ8061,
 	.name		= "Micrel KSZ8061",
 	.phy_id_mask	= MICREL_PHY_ID_MASK,
 	/* PHY_BASIC_FEATURES */
 	.config_init	= ksz8061_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.suspend	= genphy_suspend,
 	.resume		= genphy_resume,
 }, {
@@ -4892,13 +4414,13 @@ static struct phy_driver ksphy_driver[] = {
 	.probe		= kszphy_probe,
 	.get_features	= ksz9031_get_features,
 	.config_init	= ksz9021_config_init,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
-	.suspend	= kszphy_suspend,
-	.resume		= kszphy_resume,
+	.suspend	= genphy_suspend,
+	.resume		= genphy_resume,
 	.read_mmd	= genphy_read_mmd_unsupported,
 	.write_mmd	= genphy_write_mmd_unsupported,
 }, {
@@ -4911,18 +4433,15 @@ static struct phy_driver ksphy_driver[] = {
 	.config_init	= ksz9031_config_init,
 	.soft_reset	= genphy_soft_reset,
 	.read_status	= ksz9031_read_status,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
-	.suspend	= kszphy_suspend,
-	.resume		= kszphy_resume,
 }, {
 	.phy_id		= PHY_ID_LAN8814,
 	.phy_id_mask	= MICREL_PHY_ID_MASK,
 	.name		= "Microchip INDY Gigabit Quad PHY",
-	.flags          = PHY_POLL_CABLE_TEST,
 	.config_init	= lan8814_config_init,
 	.driver_data    = &lan8814_type,
 	.probe		= lan8814_probe,
@@ -4936,10 +4455,10 @@ static struct phy_driver ksphy_driver[] = {
 	.config_intr	= lan8814_config_intr,
 	.handle_interrupt = lan8814_handle_interrupt,
 	.link_change_notify = lan8814_link_change_notify,
-	.get_sqi	= lan8814_get_sqi,
-	.get_sqi_max	= lan8814_get_sqi_max,
-	.cable_test_start = lan8814_cable_test_start,
-	.cable_test_get_status	= ksz886x_cable_test_get_status,
+	.rxtstamp	= lan8814_rxtstamp,
+	.txtstamp	= lan8814_txtstamp,
+	.hwtstamp	= lan8814_hwtstamp,
+	.ts_info	= lan8814_ts_info,
 }, {
 	.phy_id		= PHY_ID_LAN8804,
 	.phy_id_mask	= MICREL_PHY_ID_MASK,
@@ -4962,34 +4481,33 @@ static struct phy_driver ksphy_driver[] = {
 	.driver_data	= &ksz9131_type,
 	.probe		= kszphy_probe,
 	.config_init	= ksz9131_config_init,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
-	.handle_interrupt = kszphy_handle_interrupt,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
-	.suspend	= kszphy_suspend,
+	.suspend	= genphy_suspend,
 	.resume		= kszphy_resume,
 }, {
 	.phy_id		= PHY_ID_LAN8841,
 	.phy_id_mask	= MICREL_PHY_ID_MASK,
 	.name		= "Microchip LAN8841 Gigabit PHY",
-	.flags		= PHY_POLL_CABLE_TEST,
 	.driver_data	= &lan8841_type,
 	.config_init	= lan8841_config_init,
 	.probe		= lan8841_probe,
 	.config_intr	= lan8841_config_intr,
 	.handle_interrupt = lan8841_handle_interrupt,
-	.get_sqi	= lan8841_get_sqi,
-	.get_sqi_max	= lan8814_get_sqi_max,
 	.soft_reset	= lan8841_soft_reset,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
 	.suspend	= genphy_suspend,
 	.resume		= genphy_resume,
-	/* cable test and sqi are almost compatible between lan8814 and lan8841 */
-	.cable_test_start	= lan8814_cable_test_start,
-	.cable_test_get_status	= ksz886x_cable_test_get_status,
+	.rxtstamp	= lan8814_rxtstamp,
+	.txtstamp	= lan8814_txtstamp,
+	.hwtstamp	= lan8841_hwtstamp,
+	.ts_info	= lan8841_ts_info,
 }, {
 	.phy_id		= PHY_ID_KSZ8873MLL,
 	.phy_id_mask	= MICREL_PHY_ID_MASK,
@@ -5003,17 +4521,11 @@ static struct phy_driver ksphy_driver[] = {
 }, {
 	.phy_id		= PHY_ID_KSZ886X,
 	.phy_id_mask	= MICREL_PHY_ID_MASK,
-	.name		= "Micrel KSZ8851 Ethernet MAC or KSZ886X Switch",
-	.driver_data	= &ksz886x_type,
+	.name		= "Micrel KSZ886X Switch",
 	/* PHY_BASIC_FEATURES */
-	.flags		= PHY_POLL_CABLE_TEST,
 	.config_init	= kszphy_config_init,
-	.config_aneg	= ksz886x_config_aneg,
-	.read_status	= ksz886x_read_status,
 	.suspend	= genphy_suspend,
 	.resume		= genphy_resume,
-	.cable_test_start	= ksz886x_cable_test_start,
-	.cable_test_get_status	= ksz886x_cable_test_get_status,
 }, {
 	.name		= "Micrel KSZ87XX Switch",
 	/* PHY_BASIC_FEATURES */
