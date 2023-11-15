@@ -3612,8 +3612,10 @@ static void lan8841_gpio_process_cap(struct kszphy_ptp_priv *ptp_priv);
 
 #define LAN8841_PTP_RX_PARSE_L2_ADDR_EN		370
 #define LAN8841_PTP_RX_PARSE_IP_ADDR_EN		371
+#define LAN8841_PTP_RX_VERSION			374
 #define LAN8841_PTP_TX_PARSE_L2_ADDR_EN		434
 #define LAN8841_PTP_TX_PARSE_IP_ADDR_EN		435
+#define LAN8841_PTP_TX_VERSION			438
 #define LAN8841_PTP_CMD_CTL			256
 #define LAN8841_PTP_CMD_CTL_PTP_ENABLE		BIT(2)
 #define LAN8841_PTP_CMD_CTL_PTP_DISABLE		BIT(1)
@@ -3682,6 +3684,10 @@ hw_init:
 	phy_write_mmd(phydev, 2, LAN8841_PTP_RX_PARSE_L2_ADDR_EN, 0);
 	phy_write_mmd(phydev, 2, LAN8841_PTP_TX_PARSE_IP_ADDR_EN, 0);
 	phy_write_mmd(phydev, 2, LAN8841_PTP_RX_PARSE_IP_ADDR_EN, 0);
+
+	/* Disable checking for minorVersionPTP field */
+	phy_write_mmd(phydev, 2, LAN8841_PTP_RX_VERSION, 0xff00);
+	phy_write_mmd(phydev, 2, LAN8841_PTP_TX_VERSION, 0xff00);
 
 	/* 100BT Clause 40 improvenent errata */
 	phy_write_mmd(phydev, 28, LAN8841_ANALOG_CONTROL_1, 0x40);
