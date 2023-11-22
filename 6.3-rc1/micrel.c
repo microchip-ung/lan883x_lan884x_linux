@@ -3480,6 +3480,8 @@ static int lan8814_probe(struct phy_device *phydev)
 #define LAN8841_PTP_CMD_CTL_PTP_RESET		BIT(0)
 #define LAN8841_PTP_RX_PARSE_CONFIG		368
 #define LAN8841_PTP_TX_PARSE_CONFIG		432
+#define LAN8841_CTRL_REG			0
+#define LAN8841_CTRL_REG_CR_TRANS_DIS		BIT(14)
 
 static int lan8841_config_init(struct phy_device *phydev)
 {
@@ -3557,6 +3559,11 @@ static int lan8841_config_init(struct phy_device *phydev)
 		      LAN8841_MMD0_REGISTER_17,
 		      LAN8841_MMD0_REGISTER_17_DROP_OPT(2) |
 		      LAN8841_MMD0_REGISTER_17_XMIT_TOG_TX_DIS);
+
+	/* Enable Cr_trans_dis bit to avoid LTC register reset */
+	phy_modify_mmd(phydev, KSZ9131RN_MMD_COMMON_CTRL_REG, LAN8841_CTRL_REG,
+		       LAN8841_CTRL_REG_CR_TRANS_DIS,
+		       LAN8841_CTRL_REG_CR_TRANS_DIS);
 
 	return 0;
 }

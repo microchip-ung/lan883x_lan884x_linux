@@ -3159,6 +3159,8 @@ static void lan8841_gpio_process_cap(struct kszphy_ptp_priv *ptp_priv);
 #define LAN8841_BTRX_POWER_DOWN			70
 #define LAN8841_MMD0_REGISTER_17		17
 #define LAN8841_ADC_CHANNEL_MASK		198
+#define LAN8841_CTRL_REG			0
+#define LAN8841_CTRL_REG_CR_TRANS_DIS		BIT(14)
 static int lan8841_config_init(struct phy_device *phydev)
 {
 	char *rx_data_skews[4] = {"rxd0-skew-psec", "rxd1-skew-psec",
@@ -3240,6 +3242,11 @@ hw_init:
 	/* 100BT RGMII latency tuning errata */
 	phy_write_mmd(phydev, 1, LAN8841_ADC_CHANNEL_MASK, 0x0);
 	phy_write_mmd(phydev, 0, LAN8841_MMD0_REGISTER_17, 0xa);
+
+	/* Enable Cr_trans_dis bit to avoid LTC register reset */
+	phy_modify_mmd(phydev, KSZ9131RN_MMD_COMMON_CTRL_REG, LAN8841_CTRL_REG,
+		       LAN8841_CTRL_REG_CR_TRANS_DIS,
+		       LAN8841_CTRL_REG_CR_TRANS_DIS);
 
 	return 0;
 }
