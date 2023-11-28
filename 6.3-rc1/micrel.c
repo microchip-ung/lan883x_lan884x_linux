@@ -35,6 +35,10 @@
 #include <linux/net_tstamp.h>
 #include <linux/gpio/consumer.h>
 
+#define PHY_ID_LAN8841		0x00221650
+#define PHY_ID_LAN8814		0x00221660
+#define PHY_ID_LAN8804		0x00221670
+
 /* Operation Mode Strap Override */
 #define MII_KSZPHY_OMSO				0x16
 #define KSZPHY_OMSO_FACTORY_TEST		BIT(15)
