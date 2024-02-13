@@ -1,5 +1,4 @@
 obj-m = lan884x.o
-lan884x-objs := micrel.o
 
 KVERSION = $(shell uname -r)
 all:
