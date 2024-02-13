@@ -1679,7 +1679,7 @@ static int lan8841_ptp_perout_on(struct kszphy_ptp_priv *ptp_priv, int pin)
 #define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_A_MASK	GENMASK(7, 4)
 #define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_B_MASK	GENMASK(11, 8)
 #define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_A		4
-#define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_B		7
+#define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_B		8
 
 static int lan8841_ptp_remove_event(struct kszphy_ptp_priv *ptp_priv, int pin,
 				    u8 event)

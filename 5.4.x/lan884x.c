@@ -1321,9 +1321,6 @@ static int lan8841_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 	struct kszphy_ptp_priv *ptp_priv = container_of(ptp, struct kszphy_ptp_priv,
 							ptp_clock_info);
 
-	if (chan != 0)
-		return -1;
-
 	/* Even if there are more then 2 pins, only 2 events can be active at
 	 * the same time
 	 */
@@ -1414,7 +1411,7 @@ static s8 lan8841_ptp_get_event(struct kszphy_ptp_priv *ptp_priv, int pin)
 #define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_A_MASK		GENMASK(7,4)
 #define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_B_MASK		GENMASK(11,8)
 #define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_A		4
-#define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_B		7
+#define LAN8841_PTP_GENERAL_CONFIG_LTC_EVENT_B		8
 static void lan8841_ptp_remove_event(struct kszphy_ptp_priv *ptp_priv, int pin)
 {
 	struct phy_device *phydev = ptp_priv->phydev;
